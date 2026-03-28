@@ -1,0 +1,131 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '0 8 * * 1'
+
+jobs:
+  lint-and-test:
+    name: Lint y Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Instalar PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+
+      - name: Instalar dependencias Laravel
+        working-directory: backend
+        run: composer install --no-interaction
+
+      - name: PHP CodeSniffer
+        working-directory: backend
+        run: |
+          composer require --dev squizlabs/php_codesniffer --no-interaction
+          vendor/bin/phpcs --standard=PSR12 --ignore=vendor,database,storage app/
+
+      - name: Tests PHPUnit
+        working-directory: backend
+        run: php artisan test
+
+      - name: Instalar Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+
+      - name: Instalar dependencias Angular
+        working-directory: frontend
+        run: npm install
+
+      - name: ESLint Angular
+        working-directory: frontend
+        run: npx eslint "src/**/*.ts" --max-warnings=50 || true
+
+      - name: Build Angular
+        working-directory: frontend
+        run: npm run build
+
+  docker:
+    name: Build y Push Docker
+    runs-on: ubuntu-latest
+    needs: lint-and-test
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Login Docker Hub
+        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+      - name: Build imagen Alpine
+        working-directory: backend
+        run: docker build -f Dockerfile.php81 -t ${{ secrets.DOCKER_USERNAME }}/practica-php81:latest .
+
+      - name: Build imagen Ubuntu
+        working-directory: backend
+        run: docker build -f Dockerfile.php82 -t ${{ secrets.DOCKER_USERNAME }}/practica-php82:latest .
+
+      - name: Escaneo ClamAV
+        run: |
+          sudo apt-get install -y clamav
+          sudo freshclam
+          clamscan --recursive backend/ --exclude-dir=vendor || true
+
+      - name: Push imagen Alpine
+        run: docker push ${{ secrets.DOCKER_USERNAME }}/practica-php81:latest
+
+      - name: Push imagen Ubuntu
+        run: docker push ${{ secrets.DOCKER_USERNAME }}/practica-php82:latest
+
+  deploy:
+    name: Despliegue en VPS
+    runs-on: ubuntu-latest
+    needs: docker
+    steps:
+      - name: Desplegar en VPS
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            docker pull ${{ secrets.DOCKER_USERNAME }}/practica-php82:latest
+            docker stop practica-backend || true
+            docker rm practica-backend || true
+            docker run -d --name practica-backend -p 8000:8000 ${{ secrets.DOCKER_USERNAME }}/practica-php82:latest
+
+      - name: Prueba post-despliegue
+        run: |
+          sleep 15
+          curl -f http://${{ secrets.VPS_HOST }}:8000/api/saludo
+
+      - name: Notificacion email exito
+        if: success()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "Pipeline OK - Practica CI/CD"
+          to: ${{ secrets.MAIL_USERNAME }}
+          from: ${{ secrets.MAIL_USERNAME }}
+          body: "El pipeline ha finalizado correctamente y la app esta desplegada en http://${{ secrets.VPS_HOST }}:8000"
+
+      - name: Notificacion email fallo
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "Pipeline FALLIDO - Practica CI/CD"
+          to: ${{ secrets.MAIL_USERNAME }}
+          from: ${{ secrets.MAIL_USERNAME }}
+          body: "El pipeline ha fallado. Revisa los logs en GitHub Actions."
