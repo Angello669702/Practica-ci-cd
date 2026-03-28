@@ -76,6 +76,7 @@ jobs:
       - name: Escaneo ClamAV
         run: |
           sudo apt-get install -y clamav
+          sudo systemctl stop clamav-freshclam || true
           sudo freshclam
           clamscan --recursive backend/ --exclude-dir=vendor || true
 
