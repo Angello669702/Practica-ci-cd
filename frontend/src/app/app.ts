@@ -17,7 +17,7 @@ export class App implements OnInit {
   private http = inject(HttpClient);
 
   ngOnInit() {
-    this.http.get<{ mensaje: string; suma: number; version: string }>('http://192.168.1.44:8000/api/saludo').subscribe(data => {
+    this.http.get<{ mensaje: string; suma: number; version: string }>('http://146.59.32.44:8000/api/saludo').subscribe(data => {
       this.mensaje.set(data.mensaje);
       this.suma.set(data.suma);
       this.version.set(data.version);
